@@ -21,7 +21,7 @@ W1 会往错误的内核地址写东西，手机会当场重启，严重时会�
   bin\glbin             内核利用二进制（设备端执行）
   bin\payload_run.bin   它的输入 profile
   bin\glpc.sh           设备端分阶段执行器
-  apk\ghostlock-retry.apk      手机端 App（不用电脑也能提权，见路线 B）
+  apk\ghostlock-retry.apk      手机端 App（5.2 MB，自带 KernelSU 组件，见路线 B）
   apk\装APK.cmd         用 adb 装这个 App
   slide\算基址.cmd    给 App 算本 boot 的内核基址（路线 B 用）
   slide\perf_slide     采样器
@@ -70,6 +70,13 @@ W1 会往错误的内核地址写东西，手机会当场重启，严重时会�
          它会把结果按 boot_id 写进手机 /sdcard/Download/ghostlock-retry/base.txt
       2. 打开 App，不用勾 Shizuku，直接点「执行」
 
+  APK 里自带 KernelSU 要用的四样东西（kernelsu.ko / ksud / magiskpolicy /
+  ksu_rules，一共 9 MB，所以装完是 5.2 MB）。App 启动时把它们解到自己的
+  私有目录，root 脚本再搬到 /data/local/tmp/ksu_fne —— **换一台手机不用再
+  手工推任何文件**。以前这四样只在开发机上，别的机器上跑就会出现「W1/W2/W3
+  全成功、child is root 也打出来了，但没有 su」，日志最后一行是
+  `module load pending`。
+
   注意：手机每重启一次，slide 就变一次。B-2 每次开机都要重跑算基址.cmd。
         App 自己会校验 boot_id，发现基址是上一次开机的会拒绝执行
         （这是故意设计的——用旧基址会写歪地址，把手机送走）。
@@ -116,6 +123,35 @@ W1 会往错误的内核地址写东西，手机会当场重启，严重时会�
     收尾会故意跳过（不能既没 root 又把机器锁上）。
 
 
+出问题了怎么查（不用 root，直接把文件拷出来看）
+------------------------------------------------
+  跑完之后手机上有三个文件，按这个顺序看：
+
+  1. /sdcard/Download/ghostlock-retry/status.txt
+         root 脚本写的结论，就三行，例：
+             ksu=1
+             enforce=0
+         ksu=1 表示 KernelSU 模块真加载了；enforce=0 是写这张纸的时候
+         SELinux 还是宽容模式（收尾在那之后才做，这是正常的）。
+         这个文件不存在 = root 脚本根本没跑到那一步，看第 3 个文件。
+
+  2. /sdcard/Download/ghostlock-retry/run-<时间>.log
+         exploit 自己的输出。关键几行：
+             [+] child is root!        W2 成功，临时 root 到手
+             [+] KernelSU ready        KSU 在 3 秒内起来了（运气好才有）
+             === exit 0 ksu=... ===    ksu 只有上面那行出现才是 true
+         如果只有 child is root 没有 KernelSU ready，不要急着当失败 ——
+         ksud 一般要 10-30 秒，exploit 只等 3 秒。以 status.txt 为准。
+
+  3. App 私有目录里的 .ghostlock_ksu.log（要 root 才能看）
+         adb shell su -c 'cat /data/user/0/com.ghostlock.retry/files/.ghostlock_ksu.log'
+         里面有 step: 标记，能看出卡在哪一步：
+             step: insmod-ok          → 模块加载成功
+             step: ksud-stages-done   → 四个 ksud 阶段都过了
+             step: harden-enter       → 开始切回 Enforcing
+         如果看到 [!] .../kernelsu.ko missing，就是 APK 太旧（没有自带组件）。
+
+
 常见问题
 ------------------------------------------------
   装 APK 报 INSTALL_FAILED_ABORTED
@@ -134,6 +170,11 @@ W1 会往错误的内核地址写东西，手机会当场重启，严重时会�
   脚本说没检测到设备
       换数据线（有的线只能充电）；手机上确认 USB 调试授权弹窗点了允许；
       adb kill-server 后再试。
+
+  跑完 App 说「kernelsu 未加载」但 adb 里 su 能用
+      大概率是判定时机问题：exploit 只等 3 秒就退出，ksud 还没 insmod 完。
+      现在的版本会去读 status.txt 再判一次，看到「已通知」字样就是真成功了。
+      用 adb shell su -c id 复核最直接。
 
   跑完 su 能用但 App 里看不到 su
       KSU 的 su 挂在 /data/adb/ksu/bin/su，有些 App 的 mount namespace 里不可见。
